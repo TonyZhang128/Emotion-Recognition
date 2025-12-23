@@ -1,0 +1,42 @@
+{
+  "config_name": "A",
+  "fast_mode": false,
+  "num_epochs_target": 50,
+  "epochs_per_fold": [
+    50,
+    50,
+    50,
+    50,
+    50
+  ],
+  "batch_size": 64,
+  "lr": 0.0001,
+  "weight_decay": 0.0001,
+  "dropout_p": 0.5,
+  "n_splits": 5,
+  "use_zscore": true,
+  "zscore_by_channel": true,
+  "seed": 42,
+  "classes_values": [
+    1,
+    2,
+    3
+  ],
+  "value2id": {
+    "1": 0,
+    "2": 1,
+    "3": 2
+  },
+  "train_f1_mean": 0.6497016702489283,
+  "train_f1_std": 0.009944296646699978,
+  "test_f1_mean": 0.6693541006857407,
+  "test_f1_std": 0.01755930117543938,
+  "train_acc_mean": 0.6897633171250487,
+  "train_acc_std": 0.009431963361377256,
+  "test_acc_mean": 0.7059650728521382,
+  "test_acc_std": 0.018374616112872572,
+  "train_loss_mean": 0.7414136537655704,
+  "train_loss_std": 0.012352693453134557,
+  "test_loss_mean": 0.7079892359673977,
+  "test_loss_std": 0.01944212908019352
+}

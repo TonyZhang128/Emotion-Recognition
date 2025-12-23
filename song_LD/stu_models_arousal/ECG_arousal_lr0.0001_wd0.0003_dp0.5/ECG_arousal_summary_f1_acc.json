@@ -1,0 +1,31 @@
+{
+  "modal_name": "ECG_arousal",
+  "num_epochs_target": 50,
+  "epochs_per_fold": [
+    11,
+    12,
+    12,
+    12,
+    12
+  ],
+  "batch_size": 64,
+  "lr": 0.0001,
+  "weight_decay": 0.0003,
+  "dropout_p": 0.5,
+  "n_splits": 5,
+  "use_zscore": true,
+  "zscore_by_channel": true,
+  "seed": 42,
+  "train_f1_mean": 0.8470421268860047,
+  "train_f1_std": 0.02008558445747115,
+  "test_f1_mean": 0.5318839066409469,
+  "test_f1_std": 0.1300219213141862,
+  "train_acc_mean": 0.8714842650941396,
+  "train_acc_std": 0.01922173070757319,
+  "test_acc_mean": 0.602131108853798,
+  "test_acc_std": 0.15481757883257566,
+  "train_loss_mean": 0.2772607470197337,
+  "train_loss_std": 0.019872315549010044,
+  "test_loss_mean": 0.9365952943052566,
+  "test_loss_std": 0.3404689609253381
+}

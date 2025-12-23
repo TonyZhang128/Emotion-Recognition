@@ -1,0 +1,38 @@
+{
+  "config_name": "D",
+  "fast_mode": true,
+  "num_epochs_target": 15,
+  "epochs_per_fold": [
+    7
+  ],
+  "batch_size": 64,
+  "lr": 0.0001,
+  "weight_decay": 0.0001,
+  "dropout_p": 0.5,
+  "n_splits": 1,
+  "use_zscore": true,
+  "zscore_by_channel": true,
+  "seed": 42,
+  "classes_values": [
+    1,
+    2,
+    3
+  ],
+  "value2id": {
+    "1": 0,
+    "2": 1,
+    "3": 2
+  },
+  "train_f1_mean": 0.12896825396825398,
+  "train_f1_std": 0.0,
+  "test_f1_mean": 0.12887236679058242,
+  "test_f1_std": 0.0,
+  "train_acc_mean": 0.23985239852398524,
+  "train_acc_std": 0.0,
+  "test_acc_mean": 0.23963133640552994,
+  "test_acc_std": 0.0,
+  "train_loss_mean": NaN,
+  "train_loss_std": NaN,
+  "test_loss_mean": NaN,
+  "test_loss_std": NaN
+}

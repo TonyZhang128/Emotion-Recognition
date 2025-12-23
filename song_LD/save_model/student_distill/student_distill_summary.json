@@ -1,0 +1,29 @@
+{
+  "num_epochs_target": 40,
+  "epochs_per_fold": [
+    7,
+    7,
+    7,
+    7,
+    7
+  ],
+  "batch_size": 64,
+  "lr": 0.0001,
+  "weight_decay": 0.0003,
+  "n_splits": 5,
+  "seed": 42,
+  "T": 3.0,
+  "alpha": 0.7,
+  "train_f1_mean": 0.12767407482565243,
+  "train_f1_std": 0.0025523974360399976,
+  "test_f1_mean": 0.1281827345748126,
+  "test_f1_std": 0.0015235478774689177,
+  "train_acc_mean": 0.23690292148482933,
+  "train_acc_std": 0.005816037882001413,
+  "test_acc_mean": 0.2370406584250174,
+  "test_acc_std": 0.005513613921468698,
+  "train_loss_mean": NaN,
+  "train_loss_std": NaN,
+  "test_loss_mean": NaN,
+  "test_loss_std": NaN
+}

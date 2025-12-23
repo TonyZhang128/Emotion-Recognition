@@ -1,0 +1,52 @@
+{
+  "data_mat": "D:\\song_LD\\data\\tea_train_data.mat",
+  "label_mat": "D:\\song_LD\\data\\tea_train_arousallabel_num.mat",
+  "N": 5421,
+  "splits": 5,
+  "epochs": 40,
+  "batch": 64,
+  "lr": 0.0001,
+  "wd": 0.0003,
+  "dropout": 0.5,
+  "zscore": true,
+  "zscore_by_channel": true,
+  "fold_metrics": [
+    {
+      "fold": 1,
+      "best_f1": 0.78710629731152,
+      "last_train_f1": 0.7910268325028202,
+      "last_test_f1": 0.78710629731152,
+      "ckpt": "D:\\song_LD\\data\\teacher_pair2bin_py\\best_model_fold1.pth"
+    },
+    {
+      "fold": 2,
+      "best_f1": 0.42932251765059337,
+      "last_train_f1": 0.4294159869618528,
+      "last_test_f1": 0.42932251765059337,
+      "ckpt": "D:\\song_LD\\data\\teacher_pair2bin_py\\best_model_fold2.pth"
+    },
+    {
+      "fold": 3,
+      "best_f1": 0.42932251765059337,
+      "last_train_f1": 0.4294159869618528,
+      "last_test_f1": 0.42932251765059337,
+      "ckpt": "D:\\song_LD\\data\\teacher_pair2bin_py\\best_model_fold3.pth"
+    },
+    {
+      "fold": 4,
+      "best_f1": 0.42932251765059337,
+      "last_train_f1": 0.4294159869618528,
+      "last_test_f1": 0.42932251765059337,
+      "ckpt": "D:\\song_LD\\data\\teacher_pair2bin_py\\best_model_fold4.pth"
+    },
+    {
+      "fold": 5,
+      "best_f1": 0.429472261842204,
+      "last_train_f1": 0.42937855703960826,
+      "last_test_f1": 0.429472261842204,
+      "ckpt": "D:\\song_LD\\data\\teacher_pair2bin_py\\best_model_fold5.pth"
+    }
+  ],
+  "mean_best_f1": 0.5009092224211009,
+  "std_best_f1": 0.1430985491975949
+}

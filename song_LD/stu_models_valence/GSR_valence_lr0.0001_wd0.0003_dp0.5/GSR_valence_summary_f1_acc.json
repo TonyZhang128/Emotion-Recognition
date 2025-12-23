@@ -1,0 +1,31 @@
+{
+  "modal_name": "GSR_valence",
+  "num_epochs_target": 50,
+  "epochs_per_fold": [
+    13,
+    13,
+    16,
+    13,
+    15
+  ],
+  "batch_size": 64,
+  "lr": 0.0001,
+  "weight_decay": 0.0003,
+  "dropout_p": 0.5,
+  "n_splits": 5,
+  "use_zscore": true,
+  "zscore_by_channel": true,
+  "seed": 42,
+  "train_f1_mean": 0.6271144041574324,
+  "train_f1_std": 0.023095347709363195,
+  "test_f1_mean": 0.4968111811743685,
+  "test_f1_std": 0.04142756196731195,
+  "train_acc_mean": 0.6404134949541668,
+  "train_acc_std": 0.0242322756866981,
+  "test_acc_mean": 0.5212946717148398,
+  "test_acc_std": 0.04457662746712082,
+  "train_loss_mean": 0.6302366005522864,
+  "train_loss_std": 0.01787907457836863,
+  "test_loss_mean": 0.7053959097181048,
+  "test_loss_std": 0.011414049947251174
+}

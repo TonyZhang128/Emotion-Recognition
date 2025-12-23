@@ -1,0 +1,31 @@
+{
+  "modal_name": "EEG_valence",
+  "num_epochs_target": 50,
+  "epochs_per_fold": [
+    16,
+    13,
+    11,
+    12,
+    11
+  ],
+  "batch_size": 64,
+  "lr": 0.0001,
+  "weight_decay": 0.0003,
+  "dropout_p": 0.5,
+  "n_splits": 5,
+  "use_zscore": true,
+  "zscore_by_channel": true,
+  "seed": 42,
+  "train_f1_mean": 0.9331739521955937,
+  "train_f1_std": 0.028304335660572673,
+  "test_f1_mean": 0.6772616295048021,
+  "test_f1_std": 0.016927520543931148,
+  "train_acc_mean": 0.9367666840107148,
+  "train_acc_std": 0.027343425091073292,
+  "test_acc_mean": 0.7008146848482983,
+  "test_acc_std": 0.03136576646758755,
+  "train_loss_mean": 0.17308893964758942,
+  "train_loss_std": 0.05712876669080823,
+  "test_loss_mean": 0.7568314049925122,
+  "test_loss_std": 0.03679996726556106
+}

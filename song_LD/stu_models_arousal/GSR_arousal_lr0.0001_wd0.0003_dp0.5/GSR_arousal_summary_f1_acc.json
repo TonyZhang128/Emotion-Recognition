@@ -1,0 +1,31 @@
+{
+  "modal_name": "GSR_arousal",
+  "num_epochs_target": 50,
+  "epochs_per_fold": [
+    16,
+    8,
+    11,
+    14,
+    8
+  ],
+  "batch_size": 64,
+  "lr": 0.0001,
+  "weight_decay": 0.0003,
+  "dropout_p": 0.5,
+  "n_splits": 5,
+  "use_zscore": true,
+  "zscore_by_channel": true,
+  "seed": 42,
+  "train_f1_mean": 0.5857445342176745,
+  "train_f1_std": 0.03187105734079147,
+  "test_f1_mean": 0.48784763901671163,
+  "test_f1_std": 0.013340293067848685,
+  "train_acc_mean": 0.6301023941210101,
+  "train_acc_std": 0.031300169617073687,
+  "test_acc_mean": 0.5403556294312596,
+  "test_acc_std": 0.049640107088879754,
+  "train_loss_mean": 0.6419745419706617,
+  "train_loss_std": 0.02867996434687094,
+  "test_loss_mean": 0.70907838174275,
+  "test_loss_std": 0.019457038242364822
+}

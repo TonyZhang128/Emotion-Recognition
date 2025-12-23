@@ -1,0 +1,31 @@
+{
+  "modal_name": "ECG_valence",
+  "num_epochs_target": 50,
+  "epochs_per_fold": [
+    13,
+    11,
+    11,
+    9,
+    13
+  ],
+  "batch_size": 64,
+  "lr": 0.0001,
+  "weight_decay": 0.0003,
+  "dropout_p": 0.5,
+  "n_splits": 5,
+  "use_zscore": true,
+  "zscore_by_channel": true,
+  "seed": 42,
+  "train_f1_mean": 0.835292705272677,
+  "train_f1_std": 0.03734366271044453,
+  "test_f1_mean": 0.578169830031387,
+  "test_f1_std": 0.026409660305563108,
+  "train_acc_mean": 0.8421396774007054,
+  "train_acc_std": 0.0364904252615362,
+  "test_acc_mean": 0.5942623203127405,
+  "test_acc_std": 0.033288073452090006,
+  "train_loss_mean": 0.3557181635073253,
+  "train_loss_std": 0.06805696132649272,
+  "test_loss_mean": 0.7871436800275531,
+  "test_loss_std": 0.052306617683555316
+}

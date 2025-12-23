@@ -1,0 +1,31 @@
+{
+  "modal_name": "EEG_arousal",
+  "num_epochs_target": 50,
+  "epochs_per_fold": [
+    14,
+    12,
+    12,
+    10,
+    12
+  ],
+  "batch_size": 64,
+  "lr": 0.0001,
+  "weight_decay": 0.0003,
+  "dropout_p": 0.5,
+  "n_splits": 5,
+  "use_zscore": true,
+  "zscore_by_channel": true,
+  "seed": 42,
+  "train_f1_mean": 0.9300769435668121,
+  "train_f1_std": 0.02861071718477024,
+  "test_f1_mean": 0.6307729106531337,
+  "test_f1_std": 0.050332559619601716,
+  "train_acc_mean": 0.9442460156867281,
+  "train_acc_std": 0.024482818056028876,
+  "test_acc_mean": 0.7003816911379938,
+  "test_acc_std": 0.08429793657593175,
+  "train_loss_mean": 0.1526166480300682,
+  "train_loss_std": 0.04536278259256533,
+  "test_loss_mean": 0.8399668421064105,
+  "test_loss_std": 0.08034324254320142
+}

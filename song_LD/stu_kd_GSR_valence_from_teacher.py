@@ -1,0 +1,338 @@
+# -*- coding: utf-8 -*-
+import os, json, random
+import numpy as np
+import scipy.io as sio
+import matplotlib.pyplot as plt
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import f1_score
+
+DATA_DIR = r"D:\song_LD\data"
+TEACHER_CKPT = r"D:\song_LD\data\teacher_pair2bin_py\best_model_fold1.pth"  # <<< 改这里
+assert os.path.exists(TEACHER_CKPT), f"TEACHER_CKPT 不存在：{TEACHER_CKPT}"
+
+STU_DATA_MAT  = os.path.join(DATA_DIR, "stu_test_valence_GSRdata.mat")
+STU_LABEL_MAT = os.path.join(DATA_DIR, "stu_test_valence_GSRlabel.mat")
+assert os.path.exists(STU_DATA_MAT), STU_DATA_MAT
+assert os.path.exists(STU_LABEL_MAT), STU_LABEL_MAT
+
+STUDENT_PERSON = 1  # <<< 1=Person-1(head_p1 + 填到26:27)，2=Person-2(head_p2 + 填到53:54)
+
+SAVE_DIR = os.path.join(DATA_DIR, "stu_kd_GSR_valence")
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+NUM_EPOCHS   = 50
+BATCH_SIZE   = 64
+LR           = 1e-4
+WEIGHT_DECAY = 3e-4
+DROPOUT_P    = 0.5
+N_SPLITS     = 5
+SEED         = 42
+
+USE_ZSCORE   = True
+ZSCORE_BY_CH = True
+
+KD_T     = 4.0
+KD_ALPHA = 0.5
+
+USE_AMP  = False
+MAX_NORM = 1.0
+LR_SCHED_PATIENCE = 3
+EARLY_PATIENCE    = 7
+MIN_LR            = 1e-6
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+def set_seed(seed=42):
+    random.seed(seed); np.random.seed(seed)
+    torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+set_seed(SEED)
+
+def load_mat_var(path: str, candidates, squeeze=True):
+    arr = None
+    need_h5 = False
+    try:
+        m = sio.loadmat(path)
+        for k in candidates:
+            if k in m:
+                arr = m[k]; break
+        if arr is None:
+            for k, v in m.items():
+                if not k.startswith("__"):
+                    arr = v; break
+    except NotImplementedError:
+        need_h5 = True
+    except Exception as e:
+        if any(s in str(e).lower() for s in ["v7.3","hdf","hdf5"]):
+            need_h5 = True
+        else:
+            raise
+    if arr is None and need_h5:
+        import h5py
+        with h5py.File(path,"r") as f:
+            for k in candidates:
+                if k in f:
+                    arr = f[k][()]; break
+            if arr is None:
+                keys = list(f.keys())
+                arr = f[keys[0]][()]
+    arr = np.asarray(arr)
+    if squeeze: arr = np.squeeze(arr)
+    return arr
+
+def reorder_student_to_NCT(X, C_expected: int, T_expected=2560):
+    X = np.asarray(X)
+    if X.ndim == 2:
+        # 常见 GSR: (2560,N) -> (2560,1,N)
+        if X.shape[0] == T_expected:
+            X = X[:, None, :]
+        else:
+            raise ValueError(f"2D但不匹配T=2560: {X.shape}")
+    if X.ndim != 3:
+        raise ValueError(f"期望3D, 实际 {X.shape}")
+
+    shape = list(X.shape)
+    idx_t = shape.index(T_expected)
+    idxs = [0,1,2]; idxs.remove(idx_t)
+    a,b = idxs
+    if shape[a] == C_expected:
+        idx_c, idx_n = a, b
+    elif shape[b] == C_expected:
+        idx_c, idx_n = b, a
+    else:
+        raise ValueError(f"找不到C={C_expected} in {shape}")
+    return np.transpose(X, (idx_n, idx_c, idx_t))
+
+def zscore_tensor(x: torch.Tensor, by_channel=True):
+    if by_channel:
+        mean = x.mean(dim=1, keepdim=True)
+        std  = x.std(dim=1, keepdim=True).clamp_min(1e-6)
+    else:
+        mean = x.mean(); std = x.std().clamp_min(1e-6)
+    return (x-mean)/std
+
+class ConvBlock1D(nn.Module):
+    def __init__(self, in_ch, c1, c2, k1=7, k2=5, dropout=0.0):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv1d(in_ch, c1, kernel_size=k1, padding=k1//2, bias=True),
+            nn.BatchNorm1d(c1), nn.ReLU(inplace=True),
+            nn.Conv1d(c1, c2, kernel_size=k2, padding=k2//2, bias=True),
+            nn.BatchNorm1d(c2), nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool1d(1), nn.Flatten(), nn.Dropout(dropout),
+        )
+    def forward(self, x): return self.net(x)
+
+class TeacherPair2BinNet(nn.Module):
+    def __init__(self, dropout=0.5):
+        super().__init__()
+        self.eeg_encoder = ConvBlock1D(48, 64, 128, dropout=dropout)
+        self.ecg_encoder = ConvBlock1D(4,  16,  32, dropout=dropout)
+        self.gsr_encoder = ConvBlock1D(2,   8,  16, dropout=dropout)
+        feat_dim = 176
+        self.fuse = nn.Sequential(nn.Linear(feat_dim, feat_dim), nn.ReLU(inplace=True), nn.Dropout(dropout))
+        self.head_p1 = nn.Linear(feat_dim, 2)
+        self.head_p2 = nn.Linear(feat_dim, 2)
+
+    def forward(self, x):
+        eeg1=x[:,0:24,:]; ecg1=x[:,24:26,:]; gsr1=x[:,26:27,:]
+        eeg2=x[:,27:51,:]; ecg2=x[:,51:53,:]; gsr2=x[:,53:54,:]
+        eeg=torch.cat([eeg1,eeg2],dim=1)
+        ecg=torch.cat([ecg1,ecg2],dim=1)
+        gsr=torch.cat([gsr1,gsr2],dim=1)
+        feeg=self.eeg_encoder(eeg); fecg=self.ecg_encoder(ecg); fgsr=self.gsr_encoder(gsr)
+        f=torch.cat([feeg,fecg,fgsr],dim=1)
+        f=self.fuse(f)
+        return self.head_p1(f), self.head_p2(f)
+
+def load_teacher(ckpt_path: str):
+    ckpt = torch.load(ckpt_path, map_location=device)
+    state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+    net = TeacherPair2BinNet(dropout=DROPOUT_P).to(device)
+    net.load_state_dict(state, strict=True)
+    net.eval()
+    return net
+
+class GSRStudentNet(nn.Module):
+    def __init__(self, dropout=0.5):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv1d(1, 16, kernel_size=7, padding=3),
+            nn.BatchNorm1d(16),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(16, 32, kernel_size=5, padding=2),
+            nn.BatchNorm1d(32),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool1d(1),
+            nn.Flatten(),
+            nn.Dropout(dropout),
+        )
+        self.cls = nn.Linear(32, 2)
+    def forward(self, x):
+        return self.cls(self.encoder(x))
+
+def build_teacher_input_from_single_gsr(X_gsr: np.ndarray, person: int):
+    N, C, T = X_gsr.shape
+    X54 = np.zeros((N,54,T), dtype=np.float32)
+    if person == 1:
+        X54[:, 26:27, :] = X_gsr
+    else:
+        X54[:, 53:54, :] = X_gsr
+    return X54
+
+@torch.no_grad()
+def make_soft_labels_from_teacher(teacher, X54, T=4.0, batch_size=64, person=1):
+    ds = torch.utils.data.TensorDataset(torch.from_numpy(X54))
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=False)
+    outs=[]
+    for (xb,) in dl:
+        xb=xb.to(device, dtype=torch.float32)
+        l1,l2 = teacher(xb)
+        logits = l1 if person==1 else l2
+        p = F.softmax(logits / T, dim=1)
+        outs.append(p.cpu().numpy())
+    return np.concatenate(outs, axis=0)
+
+class KDDataset(Dataset):
+    def __init__(self, X, y, soft2, use_z=True, by_ch=True):
+        self.X = X.astype(np.float32)
+        self.y = y.astype(np.int64).reshape(-1)
+        self.soft = soft2.astype(np.float32)
+        self.use_z = use_z; self.by_ch = by_ch
+    def __len__(self): return self.X.shape[0]
+    def __getitem__(self, idx):
+        x = torch.tensor(self.X[idx], dtype=torch.float32)
+        if self.use_z: x = zscore_tensor(x, by_channel=self.by_ch)
+        y = torch.tensor(int(self.y[idx]), dtype=torch.long)
+        s = torch.tensor(self.soft[idx], dtype=torch.float32)
+        return x, y, s
+
+def run_epoch(model, loader, optimizer=None, scaler=None):
+    train = optimizer is not None
+    model.train(train)
+    losses=[]; yt=[]; yp=[]
+    for xb, yb, sb in loader:
+        xb=xb.to(device); yb=yb.to(device); sb=sb.to(device)
+        if train: optimizer.zero_grad(set_to_none=True)
+        with torch.cuda.amp.autocast(enabled=(device=="cuda" and USE_AMP)):
+            logits = model(xb)
+            log_p = F.log_softmax(logits / KD_T, dim=1)
+            loss_kd = F.kl_div(log_p, sb, reduction="batchmean") * (KD_T*KD_T)
+            loss_ce = F.cross_entropy(logits, yb)
+            loss = KD_ALPHA*loss_kd + (1.0-KD_ALPHA)*loss_ce
+        if train:
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_NORM)
+            scaler.step(optimizer); scaler.update()
+        losses.append(loss.item())
+        pred = logits.argmax(1).detach().cpu().numpy()
+        yt.extend(yb.detach().cpu().numpy().tolist())
+        yp.extend(pred.tolist())
+    loss_mean=float(np.mean(losses)) if len(losses) else np.nan
+    acc=float(np.mean(np.array(yt)==np.array(yp))) if len(yt) else 0.0
+    f1=f1_score(yt, yp, average="macro") if len(yt) else 0.0
+    return loss_mean, acc, f1
+
+def main():
+    print("========== [GSR-KD] Load student data ==========")
+    X_raw = load_mat_var(STU_DATA_MAT, ["data","X","stu_test_valence_GSRdata","stu_test_valence_GSRdata"])
+    y_raw = load_mat_var(STU_LABEL_MAT, ["label","y","stu_test_valence_GSRlabel","stu_test_valence_GSRlabel"])
+    X = reorder_student_to_NCT(X_raw, C_expected=1, T_expected=2560)  # [N,1,2560]
+    y = np.asarray(y_raw).reshape(-1).astype(np.int64)
+    print("[Debug] X:", X.shape, " y:", y.shape, " uniq:", np.unique(y))
+    assert X.shape[0]==y.shape[0]
+    assert set(np.unique(y)).issubset({0,1})
+
+    print("========== [GSR-KD] Load teacher & make soft labels ==========")
+    teacher = load_teacher(TEACHER_CKPT)
+    X54 = build_teacher_input_from_single_gsr(X, person=STUDENT_PERSON)
+    soft2 = make_soft_labels_from_teacher(teacher, X54, T=KD_T, batch_size=BATCH_SIZE, person=STUDENT_PERSON)
+    print("[Debug] soft2:", soft2.shape)
+
+    skf = StratifiedKFold(n_splits=N_SPLITS, shuffle=True, random_state=SEED)
+    last_te_f1=[]
+    pin=torch.cuda.is_available()
+
+    for fold,(tr,te) in enumerate(skf.split(X,y),1):
+        print(f"\n========== Fold {fold}/{N_SPLITS} ==========")
+        ds_tr=KDDataset(X[tr],y[tr],soft2[tr],use_z=USE_ZSCORE,by_ch=ZSCORE_BY_CH)
+        ds_te=KDDataset(X[te],y[te],soft2[te],use_z=USE_ZSCORE,by_ch=ZSCORE_BY_CH)
+        dl_tr=DataLoader(ds_tr,batch_size=BATCH_SIZE,shuffle=True,num_workers=0,pin_memory=pin)
+        dl_te=DataLoader(ds_te,batch_size=BATCH_SIZE,shuffle=False,num_workers=0,pin_memory=pin)
+
+        model=GSRStudentNet(dropout=DROPOUT_P).to(device)
+        opt=optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+        scaler=torch.cuda.amp.GradScaler(enabled=(device=="cuda" and USE_AMP))
+        sched=optim.lr_scheduler.ReduceLROnPlateau(opt, mode="min", factor=0.5, patience=LR_SCHED_PATIENCE, min_lr=MIN_LR, verbose=True)
+
+        best_f1=-1.0; no_imp=0
+        best_path=os.path.join(SAVE_DIR, f"best_student_GSR_KD_fold{fold}.pth")
+
+        tr_losses=[]; te_losses=[]; tr_f1s=[]; te_f1s=[]; tr_accs=[]; te_accs=[]
+        for ep in range(1, NUM_EPOCHS+1):
+            tr_loss,tr_acc,tr_f1 = run_epoch(model, dl_tr, optimizer=opt, scaler=scaler)
+            te_loss,te_acc,te_f1 = run_epoch(model, dl_te, optimizer=None, scaler=None)
+            tr_losses.append(tr_loss); te_losses.append(te_loss)
+            tr_f1s.append(tr_f1); te_f1s.append(te_f1)
+            tr_accs.append(tr_acc); te_accs.append(te_acc)
+
+            if np.isfinite(te_loss): sched.step(te_loss)
+            improved = te_f1 > best_f1 + 1e-6
+            if improved:
+                best_f1=te_f1; no_imp=0
+                torch.save({"model": model.state_dict(), "fold": fold, "best_f1": best_f1}, best_path)
+            else:
+                no_imp += 1
+
+            print(f"[GSR-KD][Fold{fold}] Ep{ep:02d}/{NUM_EPOCHS} | "
+                  f"Train loss={tr_loss:.4f} acc={tr_acc:.4f} f1={tr_f1:.4f} || "
+                  f"Test loss={te_loss:.4f} acc={te_acc:.4f} f1={te_f1:.4f} | "
+                  f"LR={opt.param_groups[0]['lr']:.2e} {'*BEST*' if improved else ''}")
+
+            if no_imp >= EARLY_PATIENCE:
+                print(f"[EarlyStop] Fold{fold} no improve {EARLY_PATIENCE} epochs.")
+                break
+
+        last_te_f1.append(best_f1)
+
+        fig=plt.figure(figsize=(14,5))
+        plt.subplot(1,3,1); plt.plot(tr_losses,label="Train"); plt.plot(te_losses,label="Test"); plt.title("Loss"); plt.legend()
+        plt.subplot(1,3,2); plt.plot(tr_f1s,label="Train"); plt.plot(te_f1s,label="Test"); plt.title("MacroF1"); plt.legend()
+        plt.subplot(1,3,3); plt.plot(tr_accs,label="Train"); plt.plot(te_accs,label="Test"); plt.title("Acc"); plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(SAVE_DIR, f"curves_GSR_KD_fold{fold}.png"), dpi=150)
+        plt.close(fig)
+
+    summary={
+        "modal":"GSR",
+        "student_person": int(STUDENT_PERSON),
+        "teacher_ckpt": TEACHER_CKPT,
+        "N": int(X.shape[0]),
+        "splits": N_SPLITS,
+        "epochs": NUM_EPOCHS,
+        "batch": BATCH_SIZE,
+        "lr": LR,
+        "wd": WEIGHT_DECAY,
+        "dropout": DROPOUT_P,
+        "KD_T": KD_T,
+        "KD_ALPHA": KD_ALPHA,
+        "best_f1_each_fold": last_te_f1,
+        "best_f1_mean": float(np.mean(last_te_f1)),
+        "best_f1_std":  float(np.std(last_te_f1)),
+    }
+    with open(os.path.join(SAVE_DIR,"summary_KD_GSR.json"),"w",encoding="utf-8") as f:
+        json.dump(summary,f,ensure_ascii=False,indent=2)
+
+    print("\n✅ GSR-KD Done. Saved to:", SAVE_DIR)
+    print("best_f1_mean:", summary["best_f1_mean"], "best_f1_std:", summary["best_f1_std"])
+
+if __name__=="__main__":
+    main()
