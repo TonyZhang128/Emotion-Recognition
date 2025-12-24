@@ -3,3 +3,6 @@
 *.pyc
 *.pth
 *.png
+save_model/*
+tensorboard_logs
+*.json

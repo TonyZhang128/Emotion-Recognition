@@ -21,8 +21,8 @@ except ImportError:
     from MSDNN import MSDNN          # 若 tea_train.py 与 MSDNN.py 同目录
 
 # ====== 配置 ======
-DATA_DIR   = r"D:\song_LD\data"      # ← 改成你的 .mat 所在目录
-SAVE_DIR   = r"D:\song_LD\save_model\C_lr1e-4_wd3e-4_dp0.4"
+DATA_DIR   = r"D:\workspace\researches\情绪\workspace\song_LD\data"      # ← 改成你的 .mat 所在目录
+SAVE_DIR   = r"D:\workspace\researches\情绪\workspace\song_LD\save_model\test"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 NUM_EPOCHS = 50
@@ -311,7 +311,7 @@ for fold, (train_idx, test_idx) in enumerate(skf.split(X, y), 1):
     optimizer = optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     criterion = nn.CrossEntropyLoss(weight=cls_weights_t)
 
-    scaler = torch.cuda.amp.GradScaler(enabled=(device == 'cuda' and USE_AMP))
+    scaler = torch.amp.GradScaler(enabled=(device == 'cuda' and USE_AMP))
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=LR_SCHED_PATIENCE,
         min_lr=MIN_LR, verbose=True
@@ -340,7 +340,7 @@ for fold, (train_idx, test_idx) in enumerate(skf.split(X, y), 1):
                 continue
 
             optimizer.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(enabled=(device == 'cuda' and USE_AMP)):
+            with torch.amp.autocast(enabled=(device == 'cuda' and USE_AMP)):
                 logits = model(xb)
                 if not torch.isfinite(logits).all():
                     continue
@@ -383,7 +383,7 @@ for fold, (train_idx, test_idx) in enumerate(skf.split(X, y), 1):
                 if not torch.isfinite(xb).all():
                     continue
 
-                with torch.cuda.amp.autocast(enabled=(device == 'cuda' and USE_AMP)):
+                with torch.amp.autocast(enabled=(device == 'cuda' and USE_AMP)):
                     logits = model(xb)
                     if not torch.isfinite(logits).all():
                         continue
