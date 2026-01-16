@@ -6,3 +6,5 @@
 save_model/*
 tensorboard_logs
 *.json
+*.npy
+*.dat

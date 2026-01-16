@@ -24,6 +24,7 @@ from torch.utils.tensorboard import SummaryWriter
 from sklearn.model_selection import StratifiedKFold
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import f1_score
+from models.resnet import ResNet18
 
 # ====== 模型导入 ======
 try:
@@ -122,6 +123,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-4, help="初始学习率")
     parser.add_argument("--weight_decay", type=float, default=3e-4, help="L2正则化系数")
     parser.add_argument("--dropout_p", type=float, default=0.4, help="Dropout概率")
+    parser.add_argument("--model_type", type=str, default="MSDNN", help="模型类型, 可以选MSDNN,ResNet,EEGNet,Conformer")
 
     # 数据处理
     parser.add_argument("--n_splits", type=int, default=5, help="交叉验证折数")
@@ -134,6 +136,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--lr_sched_patience", type=int, default=3, help="学习率调度器耐心值")
     parser.add_argument("--early_patience", type=int, default=70, help="早停耐心值")
     parser.add_argument("--min_lr", type=float, default=1e-6, help="最小学习率")
+    parser.add_argument("--use_StratifiedKFold", type=bool, default=False, help="是否使用StratifiedKFold交叉验证")
 
     # 其他
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
@@ -411,7 +414,7 @@ class ResNetModel(nn.Module):
         if hasattr(self.encoder, "fc"):
             self.encoder.fc = nn.Identity()
 
-        feat_dim = getattr(self.encoder, "num_channels", 176)
+        feat_dim = getattr(self.encoder, "num_channels", 64)
         self.dropout = nn.Dropout(p=dropout_p)
         self.linear = nn.Linear(feat_dim, num_classes)
 
@@ -479,6 +482,7 @@ def train_one_epoch(
     tracker = MetricsTracker()
 
     for i, (xb, yb) in enumerate(dataloader):
+        xb = xb.reshape(xb.shape[0] ,1, 54, 128*20 )
         xb = xb.to(config.device, dtype=torch.float32)
         yb = yb.to(config.device, dtype=torch.long)
 
@@ -520,6 +524,7 @@ def evaluate(
 
     with torch.no_grad():
         for xb, yb in dataloader:
+            xb = xb.reshape(xb.shape[0] ,1, 54, 128*20 )
             xb = xb.to(config.device, dtype=torch.float32)
             yb = yb.to(config.device, dtype=torch.long)
 
@@ -598,7 +603,7 @@ def train_fold(
     print(f"[Info][Fold{fold_idx}] 类别权重: {cls_weights.tolist()}")
 
     # 创建模型、优化器、损失函数
-    model = ResNetModel(MSDNN(), num_classes=num_classes, dropout_p=config.dropout_p).to(config.device)
+    model = ResNetModel(ResNet18(), num_classes=num_classes, dropout_p=config.dropout_p).to(config.device)
     optimizer = optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     criterion = nn.CrossEntropyLoss(weight=cls_weights_t)
 
@@ -839,14 +844,18 @@ def main():
     # 初始化TensorBoard
     writer = None
     if config.use_tensorboard:
-        config.tensorboard_dir.mkdir(parents=True, exist_ok=True)
-        writer = SummaryWriter(config.tensorboard_dir)
-        print(f"[Info] TensorBoard日志目录: {config.tensorboard_dir}")
+        # 按时间创建子目录
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        tb_log_dir = config.tensorboard_dir / f"run_{timestamp}"
+        tb_log_dir.mkdir(parents=True, exist_ok=True)
+        writer = SummaryWriter(tb_log_dir)
+        print(f"[Info] TensorBoard日志目录: {tb_log_dir}")
         print(f"[Info] 启动TensorBoard: tensorboard --logdir={config.tensorboard_dir}\n")
 
     # 加载数据
     X, y, meta = load_and_preprocess_data(config)
 
+    
     # 交叉验证训练
     skf = StratifiedKFold(n_splits=config.n_splits, shuffle=True, random_state=config.seed)
     fold_results = []
@@ -862,23 +871,26 @@ def main():
             config=config,
             writer=writer,
         )
+        
         fold_results.append(result)
-
-    # 关闭TensorBoard writer
-    if writer is not None:
-        writer.close()
+        if args.use_StratifiedKFold == False:
+            break
 
     # 计算交叉验证汇总
     cv_summary = compute_cross_validation_summary(fold_results)
 
     # 绘制学习曲线
-    curves_path = config.save_dir / "learning_curves.png"
-    plot_learning_curves(fold_results, curves_path)
-    print(f"\n[Info] 学习曲线已保存至: {curves_path}")
+    # curves_path = config.save_dir / "learning_curves.png"
+    # plot_learning_curves(fold_results, curves_path)
+    # print(f"\n[Info] 学习曲线已保存至: {curves_path}")
 
     # 保存训练摘要
-    save_training_summary(config, fold_results, cv_summary, meta)
+    # save_training_summary(config, fold_results, cv_summary, meta)
 
+        
+    # 关闭TensorBoard writer
+    if writer is not None:
+        writer.close()
     print("\n" + "="*60)
     print("训练完成!")
     print("="*60)
