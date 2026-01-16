@@ -1,4 +1,9 @@
-
+import numpy as np
+import torch
+from torch import nn, Tensor
+from torch.nn import functional as F
+from einops import rearrange, reduce, repeat
+from einops.layers.torch import Rearrange, Reduce
 
 class PatchEmbedding(nn.Module):
     def __init__(self, emb_size=40):
@@ -20,11 +25,12 @@ class PatchEmbedding(nn.Module):
         )
 
         self.shallownet = nn.Sequential(
-            nn.Conv2d(1, 40, (1, 25), (1, 1)),
-            nn.Conv2d(40, 40, (62, 1), (1, 1)),
+            nn.Conv2d(1, 40, (1, 25), (1, 3)),
+            nn.Conv2d(40, 40, (25, 1), (2, 1)),
             nn.BatchNorm2d(40),
             nn.ELU(),
-            nn.AvgPool2d((1, 75), (1, 15)),
+            nn.AvgPool2d((1, 80), (1, 40)),
+            nn.AvgPool2d((15, 1), (1, 1)),
             nn.Dropout(0.5),
         )
 
@@ -145,17 +151,18 @@ class ClassificationHead(nn.Sequential):
             nn.Linear(32, n_classes)
         )
         self.fc = nn.Sequential(
-            nn.Linear(280, 32),
+            nn.Linear(800, 400),
             nn.ELU(),
             nn.Dropout(0.3),
-            nn.Linear(32, 3)
+            nn.Linear(400, 64)
         )
 
     def forward(self, x):
         x = x.contiguous().view(x.size(0), -1)
         out = self.fc(x)
         
-        return x, out
+        # return x, out
+        return out
 
 
 # ! Rethink the use of Transformer for EEG signal

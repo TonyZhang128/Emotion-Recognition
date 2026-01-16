@@ -13,8 +13,6 @@ from typing import Tuple, Dict, List, Optional, Any
 from pathlib import Path
 
 import numpy as np
-import scipy.io as sio
-import matplotlib.pyplot as plt
 
 import torch
 import torch.nn as nn
@@ -23,15 +21,17 @@ from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from sklearn.model_selection import StratifiedKFold
 from sklearn.utils.class_weight import compute_class_weight
-from sklearn.metrics import f1_score
-from models.resnet import ResNet18
 
 # ====== 模型导入 ======
-try:
-    from models.MSDNN import MSDNN
-except ImportError:
-    from MSDNN import MSDNN
+from models.MSDNN import MSDNN
+from models.resnet import ResNet18
+from models.Conformer import Conformer
 
+# ====== 数据导入 ======
+from datasets.amigos import AmigosDataset, load_and_preprocess_data
+
+# ====== utils导入 ======
+from utils.metrics import MetricsTracker
 
 # ============================================================================
 # 配置管理模块
@@ -45,6 +45,7 @@ class TrainingConfig:
         self.data_dir = Path(args.data_dir)
         self.save_dir = Path(args.save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.data_name = args.data_name
 
         # 训练超参数
         self.num_epochs = args.num_epochs
@@ -52,6 +53,7 @@ class TrainingConfig:
         self.learning_rate = args.lr
         self.weight_decay = args.weight_decay
         self.dropout_p = args.dropout_p
+        self.model_type = args.model_type
 
         # 数据处理
         self.n_splits = args.n_splits
@@ -99,23 +101,14 @@ class TrainingConfig:
 def parse_arguments() -> argparse.Namespace:
     """解析命令行参数"""
     parser = argparse.ArgumentParser(
-        description="TEA数据集训练脚本 - 使用MSDNN模型进行分类",
+        description="AMIGOS 数据集进行情绪识别任务",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
 
     # 数据路径
-    parser.add_argument(
-        "--data_dir",
-        type=str,
-        default=r"D:\workspace\researches\情绪\workspace\song_LD\data",
-        help="数据文件所在目录"
-    )
-    parser.add_argument(
-        "--save_dir",
-        type=str,
-        default=r"D:\workspace\researches\情绪\workspace\song_LD\save_model\refactored",
-        help="模型和日志保存目录"
-    )
+    parser.add_argument("--data_dir", type=str, default=Path(os.path.dirname(os.path.abspath(__file__))) / "datasets", help="数据文件所在目录")
+    parser.add_argument("--save_dir", type=str, default=Path(os.path.dirname(os.path.abspath(__file__))) / "save_models", help="模型和日志保存目录")
+    parser.add_argument("--data_name", type=str, default="Arousal", help="任务名称, Arousal or Valence")
 
     # 训练超参数
     parser.add_argument("--num_epochs", type=int, default=50, help="训练轮数")
@@ -123,7 +116,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1e-4, help="初始学习率")
     parser.add_argument("--weight_decay", type=float, default=3e-4, help="L2正则化系数")
     parser.add_argument("--dropout_p", type=float, default=0.4, help="Dropout概率")
-    parser.add_argument("--model_type", type=str, default="MSDNN", help="模型类型, 可以选MSDNN,ResNet,EEGNet,Conformer")
+    parser.add_argument("--model_type", type=str, default="Conformer", help="模型类型, 可以选MSDNN,ResNet,EEGNet,Conformer")
 
     # 数据处理
     parser.add_argument("--n_splits", type=int, default=5, help="交叉验证折数")
@@ -153,247 +146,6 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
-
-# ============================================================================
-# 数据加载与处理模块
-# ============================================================================
-
-def load_mat_var(path: str, candidates: List[str], squeeze: bool = True) -> np.ndarray:
-    """
-    通用MAT文件读取函数,支持v7.3/cell/ASCII格式
-
-    Args:
-        path: MAT文件路径
-        candidates: 候选变量名列表
-        squeeze: 是否压缩维度
-
-    Returns:
-        numpy数组
-    """
-    arr = None
-    need_h5py = False
-
-    # 尝试使用scipy.io读取
-    try:
-        m = sio.loadmat(path)
-        for k in candidates:
-            if k in m:
-                arr = m[k]
-                break
-        if arr is None:
-            for k, v in m.items():
-                if not k.startswith('__'):
-                    arr = v
-                    break
-    except NotImplementedError:
-        need_h5py = True
-    except Exception as e:
-        if any(s in str(e).lower() for s in ["v7.3", "hdf"]):
-            need_h5py = True
-        else:
-            raise
-
-    # 使用h5py读取v7.3格式
-    if arr is None and need_h5py:
-        import h5py
-
-        def _deref_any(obj, f):
-            """递归解析h5py对象"""
-            if isinstance(obj, (h5py.Reference, h5py.h5r.Reference)):
-                if not obj:
-                    return None
-                return _deref_any(f[obj], f)
-
-            if isinstance(obj, h5py.Group):
-                for name in obj.keys():
-                    got = _deref_any(obj[name], f)
-                    if got is not None:
-                        return got
-                return None
-
-            if isinstance(obj, h5py.Dataset):
-                data = obj[()]
-                if isinstance(data, np.ndarray) and data.dtype.kind == 'O':
-                    flat = []
-                    for el in data.flat:
-                        if isinstance(el, (h5py.Reference, h5py.h5r.Reference)):
-                            val = _deref_any(el, f)
-                        else:
-                            val = el
-
-                        if isinstance(val, np.ndarray):
-                            if val.dtype.kind in ('U', 'S') or getattr(val.dtype, "char", '') == 'S':
-                                try:
-                                    s = ''.join(val.reshape(-1).astype(str).tolist())
-                                except Exception:
-                                    s = str(val)
-                                flat.append(s)
-                            elif np.issubdtype(val.dtype, np.integer) and val.size <= 16:
-                                try:
-                                    vv = val.reshape(-1)
-                                    if np.all((vv >= 32) & (vv <= 126)):
-                                        s = ''.join(chr(int(c)) for c in vv)
-                                        flat.append(s)
-                                    else:
-                                        flat.append(vv[0] if vv.size >= 1 else np.nan)
-                                except Exception:
-                                    vv = val.reshape(-1)
-                                    flat.append(vv[0] if vv.size >= 1 else np.nan)
-                            else:
-                                vv = val.reshape(-1)
-                                flat.append(vv[0] if vv.size >= 1 else np.nan)
-                        else:
-                            flat.append(val)
-
-                    out = np.array(flat, dtype=object).reshape(data.shape)
-                    return out
-                else:
-                    return data
-            return None
-
-        with h5py.File(path, 'r') as f:
-            for k in candidates:
-                if k in f:
-                    arr = _deref_any(f[k], f)
-                    break
-            if arr is None:
-                for name in f.keys():
-                    arr = _deref_any(f[name], f)
-                    if arr is not None:
-                        break
-            if arr is None:
-                raise KeyError(f"HDF5中未找到候选变量: {candidates}; 顶层键={list(f.keys())}")
-
-    if arr is None:
-        raise KeyError(f"MAT文件中未找到候选变量: {candidates}")
-
-    arr = np.asarray(arr)
-    if squeeze:
-        arr = np.squeeze(arr)
-    return arr
-
-
-def load_and_preprocess_data(config: TrainingConfig) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
-    """
-    加载和预处理数据
-
-    Args:
-        config: 训练配置对象
-
-    Returns:
-        (X, y, meta): 特征数组, 标签数组, 元数据字典
-    """
-    data_path = config.data_dir / "tea_train_data.mat"
-    label_path = config.data_dir / "tea_train_valencelabel.mat"
-
-    # 读取特征数据
-    X = load_mat_var(str(data_path), ["tea_train_data", "data", "X"])
-    X = np.asarray(X)
-
-    if X.ndim != 3:
-        raise ValueError(f"tea_train_data期望3维, 实际{X.shape}")
-
-    print(f"[Debug] 原始X形状: {X.shape}")
-
-    # 重新排列维度为 [N, C, T]
-    shape = X.shape
-    try:
-        idx_ch = shape.index(54)
-        idx_t = shape.index(2560)
-    except ValueError:
-        raise ValueError(f"在X.shape={shape}中找不到54或2560, 请检查数据")
-
-    idx_all = {0, 1, 2}
-    idx_b_list = list(idx_all - {idx_ch, idx_t})
-    if len(idx_b_list) != 1:
-        raise ValueError(f"维度无法唯一确定batch维: shape={shape}, idx_ch={idx_ch}, idx_t={idx_t}")
-    idx_b = idx_b_list[0]
-
-    X = np.transpose(X, (idx_b, idx_ch, idx_t))
-    print(f"[Info] 重排后X形状: {X.shape} (应为[N,54,2560])")
-
-    # 读取标签
-    y_raw = load_mat_var(str(label_path), ["tea_train_valencelabel", "label", "y"])
-    y_raw = np.asarray(y_raw)
-    y_raw = np.squeeze(y_raw)
-    if y_raw.ndim != 1:
-        y_raw = y_raw.reshape(-1)
-
-    # 转换标签: 1/2/3 -> 0/1/2
-    y_values = y_raw.astype(np.int64)
-    classes_values = np.unique(y_values)
-    num_classes = int(classes_values.size)
-
-    value2id = {v: i for i, v in enumerate(classes_values)}
-    y = np.array([value2id[v] for v in y_values], dtype=np.int64)
-
-    # 数据清洗
-    X = X.astype(np.float32)
-    y = y.astype(np.int64)
-
-    if X.shape[0] != y.shape[0]:
-        raise ValueError(f"样本数不一致: X={X.shape[0]}, y={y.shape[0]}")
-    if not (X.shape[1] == 54 and X.shape[2] == 2560):
-        raise ValueError(f"数据维度应为(N,54,2560), 实际{X.shape}")
-
-    print(f"[Check] 清理前: X finite={np.isfinite(X).all()}, y finite={np.isfinite(y).all()}")
-
-    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-    y = np.nan_to_num(y, nan=0, posinf=0, neginf=0).astype(np.int64)
-
-    print(f"[Check] 清理后: X finite={np.isfinite(X).all()}, y finite={np.isfinite(y).all()}")
-    print(f"[Info] 加载完成: X={X.shape}, y={y.shape}, 类别值={classes_values.tolist()} (K={num_classes})")
-    print(f"[Info] 标签映射: {value2id}")
-
-    meta = {
-        "num_classes": num_classes,
-        "classes_values": classes_values,
-        "value2id": value2id,
-    }
-
-    return X, y, meta
-
-
-# ============================================================================
-# 数据集类
-# ============================================================================
-
-class GaitDataset(Dataset):
-    """步态数据集类"""
-
-    def __init__(self, data_array: np.ndarray, labels: np.ndarray,
-                 use_zscore: bool = True, by_channel: bool = True):
-        """
-        Args:
-            data_array: 特征数组, shape [N, C, T]
-            labels: 标签数组, shape [N]
-            use_zscore: 是否使用Z-score归一化
-            by_channel: 是否按通道归一化
-        """
-        self.data_array = data_array
-        self.labels = labels
-        self.use_zscore = use_zscore
-        self.by_channel = by_channel
-
-    def __len__(self) -> int:
-        return int(self.labels.shape[0])
-
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        x = torch.tensor(self.data_array[idx], dtype=torch.float32)
-
-        if self.use_zscore:
-            if self.by_channel:
-                mean = x.mean(dim=1, keepdim=True)
-                std = x.std(dim=1, keepdim=True).clamp_min(1e-6)
-            else:
-                mean = x.mean()
-                std = x.std().clamp_min(1e-6)
-            x = (x - mean) / std
-
-        y = torch.tensor(int(self.labels[idx]), dtype=torch.long)
-        return x, y
-
 
 # ============================================================================
 # 模型定义
@@ -426,48 +178,6 @@ class ResNetModel(nn.Module):
         return logits
 
 
-# ============================================================================
-# 训练与评估模块
-# ============================================================================
-
-class MetricsTracker:
-    """指标跟踪器"""
-
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        """重置所有指标"""
-        self.loss = 0.0
-        self.correct = 0
-        self.total = 0
-        self.y_true = []
-        self.y_pred = []
-        self.valid_batches = 0
-
-    def update(self, loss: float, logits: torch.Tensor, labels: torch.Tensor):
-        """更新指标"""
-        self.loss += loss
-        self.valid_batches += 1
-
-        preds = logits.argmax(1)
-        self.y_true.extend(labels.detach().cpu().numpy().tolist())
-        self.y_pred.extend(preds.detach().cpu().numpy().tolist())
-        self.correct += (preds == labels).sum().item()
-        self.total += labels.size(0)
-
-    def compute(self) -> Dict[str, float]:
-        """计算并返回所有指标"""
-        loss = self.loss / self.valid_batches if self.valid_batches > 0 else float("nan")
-        acc = self.correct / self.total if self.total > 0 else 0.0
-        f1 = f1_score(self.y_true, self.y_pred, average='macro') if len(self.y_true) > 0 else 0.0
-
-        return {
-            "loss": loss,
-            "accuracy": acc,
-            "f1": f1,
-        }
-
 
 def train_one_epoch(
     model: nn.Module,
@@ -482,7 +192,7 @@ def train_one_epoch(
     tracker = MetricsTracker()
 
     for i, (xb, yb) in enumerate(dataloader):
-        xb = xb.reshape(xb.shape[0] ,1, 54, 128*20 )
+        # xb = xb.reshape(xb.shape[0] ,1, 54, 128*20 )
         xb = xb.to(config.device, dtype=torch.float32)
         yb = yb.to(config.device, dtype=torch.long)
 
@@ -524,7 +234,7 @@ def evaluate(
 
     with torch.no_grad():
         for xb, yb in dataloader:
-            xb = xb.reshape(xb.shape[0] ,1, 54, 128*20 )
+            # xb = xb.reshape(xb.shape[0] ,1, 54, 128*20 )
             xb = xb.to(config.device, dtype=torch.float32)
             yb = yb.to(config.device, dtype=torch.long)
 
@@ -574,12 +284,12 @@ def train_fold(
     print(f"\n{'='*50} Fold {fold_idx}/{config.n_splits} {'='*50}")
 
     # 创建数据加载器
-    train_dataset = GaitDataset(
+    train_dataset = AmigosDataset(
         X[train_idx], y[train_idx],
         use_zscore=config.use_zscore,
         by_channel=config.zscore_by_channel
     )
-    test_dataset = GaitDataset(
+    test_dataset = AmigosDataset(
         X[test_idx], y[test_idx],
         use_zscore=config.use_zscore,
         by_channel=config.zscore_by_channel
@@ -603,14 +313,20 @@ def train_fold(
     print(f"[Info][Fold{fold_idx}] 类别权重: {cls_weights.tolist()}")
 
     # 创建模型、优化器、损失函数
-    model = ResNetModel(ResNet18(), num_classes=num_classes, dropout_p=config.dropout_p).to(config.device)
+    if config.model_type == 'ResNet':
+        encoder = ResNet18()
+    elif config.model_type == 'Conformer':
+        encoder = Conformer(emb_size=40, depth=6, n_classes=4)
+    else:
+        raise ValueError(f"不支持的模型类型: {config.model_type}")
+    model = ResNetModel(encoder, num_classes=num_classes, dropout_p=config.dropout_p).to(config.device)
     optimizer = optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
     criterion = nn.CrossEntropyLoss(weight=cls_weights_t)
 
     scaler = torch.amp.GradScaler(enabled=(config.device.type == 'cuda' and config.use_amp))
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=config.lr_sched_patience,
-        min_lr=config.min_lr, verbose=True
+        min_lr=config.min_lr
     )
 
     # 训练历史
@@ -692,133 +408,6 @@ def train_fold(
         "epochs_trained": len(history["train_loss"]),
     }
 
-
-# ============================================================================
-# 结果分析模块
-# ============================================================================
-
-def compute_cross_validation_summary(fold_results: List[Dict]) -> Dict[str, float]:
-    """计算交叉验证汇总统计"""
-    summaries = []
-
-    for result in fold_results:
-        hist = result["history"]
-        summaries.append({
-            "train_loss": hist["train_loss"][-1],
-            "test_loss": hist["test_loss"][-1],
-            "train_f1": hist["train_f1"][-1],
-            "test_f1": hist["test_f1"][-1],
-            "train_acc": hist["train_accuracy"][-1],
-            "test_acc": hist["test_accuracy"][-1],
-        })
-
-    metrics = ["train_loss", "test_loss", "train_f1", "test_f1", "train_acc", "test_acc"]
-    summary = {}
-
-    for metric in metrics:
-        values = [s[metric] for s in summaries]
-        summary[f"{metric}_mean"] = float(np.mean(values))
-        summary[f"{metric}_std"] = float(np.std(values))
-
-    return summary
-
-
-def plot_learning_curves(
-    fold_results: List[Dict],
-    save_path: Path,
-    dpi: int = 150,
-) -> None:
-    """绘制学习曲线"""
-    def pad_to_same_length(list_of_lists, pad_value=np.nan):
-        max_len = max(len(lst) for lst in list_of_lists)
-        out = np.full((len(list_of_lists), max_len), pad_value, dtype=np.float64)
-        for i, lst in enumerate(list_of_lists):
-            out[i, :len(lst)] = lst
-        return out
-
-    # 提取所有fold的历史数据
-    fold_train_losses = [r["history"]["train_loss"] for r in fold_results]
-    fold_test_losses = [r["history"]["test_loss"] for r in fold_results]
-    fold_train_f1s = [r["history"]["train_f1"] for r in fold_results]
-    fold_test_f1s = [r["history"]["test_f1"] for r in fold_results]
-    fold_train_accs = [r["history"]["train_accuracy"] for r in fold_results]
-    fold_test_accs = [r["history"]["test_accuracy"] for r in fold_results]
-
-    # 填充到相同长度
-    train_loss_mx = pad_to_same_length(fold_train_losses)
-    test_loss_mx = pad_to_same_length(fold_test_losses)
-    train_f1_mx = pad_to_same_length(fold_train_f1s)
-    test_f1_mx = pad_to_same_length(fold_test_f1s)
-    train_acc_mx = pad_to_same_length(fold_train_accs)
-    test_acc_mx = pad_to_same_length(fold_test_accs)
-
-    # 绘图
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-
-    # Loss
-    axes[0, 0].plot(np.nanmean(train_loss_mx, axis=0), label="Train Loss (mean)", linewidth=2)
-    axes[0, 0].plot(np.nanmean(test_loss_mx, axis=0), label="Test Loss (mean)", linewidth=2)
-    axes[0, 0].set_xlabel("Epoch")
-    axes[0, 0].set_ylabel("Loss")
-    axes[0, 0].set_title("Loss Curve")
-    axes[0, 0].legend()
-    axes[0, 0].grid(True, alpha=0.3)
-
-    # F1-score
-    axes[0, 1].plot(np.nanmean(train_f1_mx, axis=0), label="Train F1 (macro, mean)", linewidth=2)
-    axes[0, 1].plot(np.nanmean(test_f1_mx, axis=0), label="Test F1 (macro, mean)", linewidth=2)
-    axes[0, 1].set_xlabel("Epoch")
-    axes[0, 1].set_ylabel("F1-score (macro)")
-    axes[0, 1].set_title("F1-score Curve")
-    axes[0, 1].legend()
-    axes[0, 1].grid(True, alpha=0.3)
-
-    # Accuracy
-    axes[1, 0].plot(np.nanmean(train_acc_mx, axis=0), label="Train Acc (mean)", linewidth=2)
-    axes[1, 0].plot(np.nanmean(test_acc_mx, axis=0), label="Test Acc (mean)", linewidth=2)
-    axes[1, 0].set_xlabel("Epoch")
-    axes[1, 0].set_ylabel("Accuracy")
-    axes[1, 0].set_title("Accuracy Curve")
-    axes[1, 0].legend()
-    axes[1, 0].grid(True, alpha=0.3)
-
-    # 隐藏第四个子图
-    axes[1, 1].axis('off')
-
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=dpi, bbox_inches='tight')
-    plt.close()
-
-
-def save_training_summary(
-    config: TrainingConfig,
-    fold_results: List[Dict],
-    cv_summary: Dict[str, float],
-    meta: Dict[str, Any],
-) -> None:
-    """保存训练摘要"""
-    summary = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "config": config.to_dict(),
-        "data_info": {
-            "num_classes": meta["num_classes"],
-            "classes_values": meta["classes_values"].tolist(),
-            "value2id": {int(k): int(v) for k, v in meta["value2id"].items()},
-        },
-        "epochs_per_fold": [r["epochs_trained"] for r in fold_results],
-        "cv_summary": cv_summary,
-    }
-
-    summary_path = config.save_dir / "training_summary.json"
-    with open(summary_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
-
-    print(f"\n{'='*50} 交叉验证汇总 {'='*50}")
-    for key, value in cv_summary.items():
-        print(f"{key}: {value:.4f}")
-    print(f"\n训练摘要已保存至: {summary_path}")
-
-
 # ============================================================================
 # 主函数
 # ============================================================================
@@ -851,10 +440,11 @@ def main():
         writer = SummaryWriter(tb_log_dir)
         print(f"[Info] TensorBoard日志目录: {tb_log_dir}")
         print(f"[Info] 启动TensorBoard: tensorboard --logdir={config.tensorboard_dir}\n")
+        print(f"{'='*60}\n")
 
     # 加载数据
-    X, y, meta = load_and_preprocess_data(config)
-
+    data_path, label_path = config.data_dir/(config.data_name+'_X.dat'), config.data_dir/(config.data_name+'_y.npy')
+    X, y, meta = load_and_preprocess_data(data_path, label_path)
     
     # 交叉验证训练
     skf = StratifiedKFold(n_splits=config.n_splits, shuffle=True, random_state=config.seed)
@@ -877,7 +467,7 @@ def main():
             break
 
     # 计算交叉验证汇总
-    cv_summary = compute_cross_validation_summary(fold_results)
+    # cv_summary = compute_cross_validation_summary(fold_results)
 
     # 绘制学习曲线
     # curves_path = config.save_dir / "learning_curves.png"
@@ -894,7 +484,6 @@ def main():
     print("\n" + "="*60)
     print("训练完成!")
     print("="*60)
-
 
 if __name__ == "__main__":
     main()
